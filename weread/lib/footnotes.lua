@@ -96,6 +96,20 @@ local function is_trivial_note(value)
         or is_symbol_marker(text)
 end
 
+-- Backlink glyphs (↩ ↑ ← ⤴) are pure symbols, yet an element carrying one may
+-- share the note target's id; a real note always contains words or CJK text,
+-- so candidates with neither can never be definitions.
+local function has_word_or_cjk_char(text)
+    if text:find("%w") then return true end
+    for i = 1, #text do
+        local byte = text:byte(i)
+        -- UTF-8 lead bytes 0xE4-0xE9 cover CJK Unified Ideographs U+4E00-U+9FFF
+        -- and neighboring CJK blocks.
+        if byte >= 228 and byte <= 233 then return true end
+    end
+    return false
+end
+
 local function normalize_path(value)
     value = decode_entities(value):gsub("\\", "/")
     value = value:match("^%s*(.-)%s*$") or ""
@@ -205,10 +219,27 @@ end
 
 local BLOCK_TAGS = { "aside", "li", "p", "div", "section", "blockquote", "dd", "td" }
 
+-- Cap on cleaned note text length in bytes (#text counts bytes, so this is
+-- ~2000 CJK chars); genuine notes are far smaller, whole-chapter captures are
+-- far larger.
+local MAX_NOTE_TEXT_BYTES = 6000
+
 local function remember_definition(definitions, anchor, inner)
-    if not anchor or anchor == "" or definitions[anchor] then return end
+    if not anchor or anchor == "" then return end
     local text = clean_note_text(inner)
-    if text ~= "" and not is_trivial_note(text) then
+    if text == "" or is_trivial_note(text) then return end
+    if not has_word_or_cjk_char(text) then return end
+    -- Ancestor blocks spanning most of the chapter poison the definition;
+    -- reject oversized candidates outright instead of storing them.
+    if #text > MAX_NOTE_TEXT_BYTES then
+        logger.warn("dropping oversized note candidate:",
+            "anchor=", tostring(anchor), "bytes=", tostring(#text))
+        return
+    end
+    local current = definitions[anchor]
+    -- The true note content is the smallest region describing the anchor,
+    -- so keep whichever candidate has the shortest cleaned text.
+    if not current or #text < #current.text then
         definitions[anchor] = { text = text }
     end
 end
