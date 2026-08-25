@@ -1362,12 +1362,75 @@ function Content.fetch_chapter_xhtml(client, settings, book, chapter)
     )
 end
 
+-- True when the text following the literal "0" of a font-size declaration
+-- (already captured by the caller's pattern) is only an optional unit plus
+-- whitespace and an optional !important flag, i.e. the declared size really is
+-- zero. Zero times any unit is still zero length, so an empty tail (bare 0) and
+-- every letter-unit form (px/em/rem/vh/...) count; fractional sizes such as
+-- 0.5rem never match because "." is not a letter.
+local function is_zero_font_size(tail)
+    local value = tail:lower():match("^%s*(.-)%s*$")
+    if value:sub(-10) == "!important" then
+        value = (value:match("^(.-)%s*!important$") or ""):match("^%s*(.-)%s*$")
+    end
+    return value == "" or value == "%" or value:match("^%a+$") ~= nil
+end
+
+-- Known limitations: property-name matching is case-sensitive (all observed
+-- WeRead shards are lowercase), and a CSS comment containing exactly
+-- "font-size: 0" may have its interior rewritten without structural harm.
+
+-- Strip hostile `font-size: 0` declarations from server-provided book css.
+-- WeRead shards occasionally ship `html, body { ... font-size: 0; }`; WeRead's
+-- own apps ignore root-element sizing but crengine honors it, collapsing the
+-- whole book to a near-zero font size on device.
+local function sanitize_book_css_pass(css)
+    local removed = 0
+    -- The sentinel "{" guarantees the boundary capture below always has a
+    -- character to inspect, even when the declaration opens the stylesheet.
+    local sanitized = ("{" .. css):gsub("([^%w%-])(%s*)font%-size%s*:%s*0([^;}]*)([;}])", function(boundary, leading, tail, terminator)
+        if not is_zero_font_size(tail) then
+            return nil -- keep fractional sizes such as 0.5rem untouched
+        end
+        removed = removed + 1
+        -- The terminator is part of the match: a semicolon belongs to the
+        -- removed declaration, but a block-closing brace must survive it.
+        if terminator == "}" then
+            return boundary .. leading .. "}"
+        end
+        return boundary .. leading
+    end)
+    return sanitized:sub(2), removed
+end
+
+function Content.sanitize_book_css(css)
+    if type(css) ~= "string" or css == "" then
+        return css, 0
+    end
+    -- Each pass consumes one boundary character per match, so adjacent zero
+    -- declarations ("font-size:0;font-size:0") need repeated passes until the
+    -- fixpoint; the cap only guards pathological input.
+    local removed_total = 0
+    local sanitized = css
+    for _i = 1, 16 do
+        local removed
+        sanitized, removed = sanitize_book_css_pass(sanitized)
+        removed_total = removed_total + removed
+        if removed == 0 then break end
+    end
+    return sanitized, removed_total
+end
+
 function Content.fetch_chapter_css(client, settings, book, chapter)
     local ok, css = pcall(function()
         return Content.decode_content_shard(Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_2"))
     end)
     if ok then
-        return css
+        local sanitized, removed = Content.sanitize_book_css(css)
+        if removed > 0 then
+            logger.warn("removed ", removed, " hostile font-size:0 declarations from book css")
+        end
+        return sanitized
     end
     return nil
 end
