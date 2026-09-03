@@ -262,4 +262,37 @@ expect(arrow_aside and arrow_aside:find("這是完整的注釋正文內容。", 
 expect(arrow_aside and arrow_aside:match("^%s*↩%s*$") == nil,
     "generated aside collapsed to the bare backlink arrow")
 
+-- Regression: notes written only in kana, hangul, Cyrillic or astral-plane CJK
+-- were treated as pure symbols, since the old check only knew %w and the CJK
+-- UTF-8 lead bytes 0xE4-0xE9. Any real text codepoint must keep the candidate.
+local scripts_html = '<p id="kana-note">これは日本語の脚注です。</p>'
+    .. '<p id="hangul-note">한국어 각주입니다.</p>'
+    .. '<p id="cyrillic-note">Это сноска на русском языке.</p>'
+    .. '<p id="extb-note">𠀀𠀁 rare CJK extension footnote.</p>'
+    .. '<p id="mixed-note">①これは注釈本体。</p>'
+local scripts_scan = Footnotes.scan_chapter(scripts_html, chapter)
+for _, anchor in ipairs({ "kana-note", "hangul-note", "cyrillic-note",
+    "extb-note", "mixed-note" }) do
+    expect(scripts_scan.definitions[anchor] ~= nil,
+        "non-ASCII script footnote was mistaken for a pure symbol: " .. anchor)
+end
+expect(scripts_scan.definitions["kana-note"].text == "これは日本語の脚注です。",
+    "kana-only footnote text was not stored verbatim")
+expect(scripts_scan.definitions["mixed-note"].text == "①これは注釈本体。",
+    "marker-plus-text footnote text was not stored verbatim")
+
+-- Symbol-only candidates (backlink arrows and their variation selectors,
+-- enclosed numbers, CJK/Latin-1 punctuation) must still be rejected outright.
+local glyph_html = '<p id="glyph-arrow">↩</p><p id="glyph-arrow-vs">↩️</p>'
+    .. '<p id="glyph-left">←</p><p id="glyph-hook">⤴</p>'
+    .. '<p id="glyph-enclosed">①</p><p id="glyph-cjk-punct">。</p>'
+    .. '<p id="glyph-latin1">«»</p><p id="glyph-dash">……</p>'
+local glyph_scan = Footnotes.scan_chapter(glyph_html, chapter)
+for _, anchor in ipairs({ "glyph-arrow", "glyph-arrow-vs", "glyph-left",
+    "glyph-hook", "glyph-enclosed", "glyph-cjk-punct", "glyph-latin1",
+    "glyph-dash" }) do
+    expect(glyph_scan.definitions[anchor] == nil,
+        "symbol-only candidate was stored as note text: " .. anchor)
+end
+
 print(("footnotes_spec: %d checks"):format(checks))
