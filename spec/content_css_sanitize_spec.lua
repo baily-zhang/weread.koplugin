@@ -44,10 +44,12 @@ expect(count == 0 and cleaned == ".slide-nav { font-size: 0 }",
     "an inline-block whitespace trick on a class selector was stripped")
 
 cleaned, count = Content.sanitize_book_css("body p{font-size:0}")
-expect(count == 0, "a descendant-of-body selector was treated as the root element")
+expect(count == 0 and cleaned == "body p{font-size:0}",
+    "a descendant-of-body selector was treated as the root element")
 
 cleaned, count = Content.sanitize_book_css("body,.wrapper{font-size:0}")
-expect(count == 0, "a selector list mixing body with other targets was treated as root-only")
+expect(count == 0 and cleaned == "body,.wrapper{font-size:0}",
+    "a selector list mixing body with other targets was treated as root-only")
 
 cleaned, count = Content.sanitize_book_css("HTML ,\nBODY { font-size: 0 }")
 expect(count == 1 and not cleaned:find("font%-size"),
