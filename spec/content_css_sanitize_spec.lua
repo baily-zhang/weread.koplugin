@@ -32,28 +32,61 @@ expect(cleaned:find("{", 1, true) and cleaned:find("}", 1, true),
 expect(cleaned:find("margin: 0;", 1, true) and cleaned:find("padding: 0;", 1, true),
     "sibling margin/padding declarations must survive sanitization")
 
+-- Review: `font-size: 0` can be intentional outside the root elements (e.g.
+-- hiding whitespace between inline-block items), so only rules whose selector
+-- list names exactly html/body may be touched.
 cleaned, count = Content.sanitize_book_css(".a{font-size: 0 !important;color:red}")
-expect(count == 1 and not cleaned:find("font%-size"),
-    "!important zero font-size was not removed")
-expect(cleaned:find("color:red", 1, true),
-    "declaration after the removed !important rule was damaged")
+expect(count == 0 and cleaned == ".a{font-size: 0 !important;color:red}",
+    "a non-root selector had its intentional font-size:0 removed")
 
-cleaned, count = Content.sanitize_book_css("p{font-size: 0px}h1{font-size: 0%;}")
+cleaned, count = Content.sanitize_book_css(".slide-nav { font-size: 0 }")
+expect(count == 0 and cleaned == ".slide-nav { font-size: 0 }",
+    "an inline-block whitespace trick on a class selector was stripped")
+
+cleaned, count = Content.sanitize_book_css("body p{font-size:0}")
+expect(count == 0, "a descendant-of-body selector was treated as the root element")
+
+cleaned, count = Content.sanitize_book_css("body,.wrapper{font-size:0}")
+expect(count == 0, "a selector list mixing body with other targets was treated as root-only")
+
+cleaned, count = Content.sanitize_book_css("HTML ,\nBODY { font-size: 0 }")
+expect(count == 1 and not cleaned:find("font%-size"),
+    "root selector matching must be case- and whitespace-insensitive")
+
+-- Deliberate limits: :root and @media-wrapped root rules stay untouched.
+cleaned, count = Content.sanitize_book_css(":root{font-size:0}")
+expect(count == 0 and cleaned == ":root{font-size:0}",
+    ":root sizing was stripped although only html/body rules are covered")
+
+local media_css = "@media print { html, body { font-size: 0 } }"
+cleaned, count = Content.sanitize_book_css(media_css)
+expect(count == 0 and cleaned == media_css,
+    "@media-wrapped root sizing was stripped although only top-level rules are covered")
+
+-- An at-rule before the selector must not prevent matching the rule itself.
+cleaned, count = Content.sanitize_book_css('@charset "utf-8";html,body{font-size:0}')
+expect(count == 1 and not cleaned:find("font%-size"),
+    "a preceding at-rule broke root-selector matching")
+
+cleaned, count = Content.sanitize_book_css("html{font-size: 0px}body{font-size: 0%;}")
 expect(count == 2 and not cleaned:find("font%-size"),
-    "zero font-size with px/% units was not fully removed")
+    "zero font-size with px/% units was not fully removed on root selectors")
 
 cleaned, count = Content.sanitize_book_css(".fs05 { font-size: 0.5rem; }")
 expect(count == 0 and cleaned == ".fs05 { font-size: 0.5rem; }",
     "fractional font-size must stay untouched")
+
+cleaned, count = Content.sanitize_book_css("html, body { font-size: 0.5rem; }")
+expect(count == 0 and cleaned == "html, body { font-size: 0.5rem; }",
+    "fractional root font-size must stay untouched")
 
 cleaned, count = Content.sanitize_book_css("p { font-size: 1rem; }")
 expect(count == 0 and cleaned == "p { font-size: 1rem; }",
     "non-zero font-size must stay untouched")
 
 cleaned, count = Content.sanitize_book_css("{ color: #000; font-size: 0\n}")
-expect(count == 1, "trailing font-size:0 without semicolon was not detected")
-expect(cleaned:sub(-1) == "}", "removal must keep the closing brace of the block")
-expect(cleaned:find("color: #000;", 1, true), "sibling color declaration was damaged")
+expect(count == 0 and cleaned:find("font-size: 0", 1, true),
+    "a block without a selector must be left untouched")
 
 local passthrough, passthrough_count = Content.sanitize_book_css(nil)
 expect(passthrough == nil and passthrough_count == 0,
@@ -63,6 +96,7 @@ expect(passthrough == "" and passthrough_count == 0,
     "empty input must pass through unchanged with count 0")
 
 -- Integration-style: sanitizing an already-sanitized shard changes nothing.
+-- Only the root rule qualifies; the other blocks keep their declarations.
 local combined = table.concat({
     hostile,
     ".a{font-size: 0 !important;color:red}",
@@ -71,17 +105,17 @@ local combined = table.concat({
 }, "\n")
 local once, first_count = Content.sanitize_book_css(combined)
 local twice, second_count = Content.sanitize_book_css(once)
-expect(first_count == 5, "combined shard should lose five zero font-size declarations")
+expect(first_count == 1, "combined shard should lose only the root font-size declaration")
 expect(second_count == 0 and twice == once, "sanitization must be idempotent")
 
 -- Adjacent zero declarations: each pass consumes one boundary character, so
 -- the sanitizer must iterate to a fixpoint instead of keeping the second one.
-cleaned, count = Content.sanitize_book_css("p{font-size:0;font-size:0}")
+cleaned, count = Content.sanitize_book_css("html,body{font-size:0;font-size:0}")
 expect(count == 2, "adjacent zero declarations must both be removed")
 expect(not cleaned:find("font%-size"), "adjacent removal left a hostile declaration behind")
-expect(cleaned:find("^p%{.*%}$"), "block structure was damaged by adjacent removal")
+expect(cleaned:find("^html,body%{.*%}$"), "block structure was damaged by adjacent removal")
 
-cleaned, count = Content.sanitize_book_css("p{font-size:0 ;font-size:0 ;color:red}")
+cleaned, count = Content.sanitize_book_css("html,body{font-size:0 ;font-size:0 ;color:red}")
 expect(count == 2 and cleaned:find("color:red", 1, true),
     "spaced adjacent zeros must be removed while siblings survive")
 
@@ -91,11 +125,11 @@ expect(count == 1 and not cleaned:find("font%-size"),
 
 -- A CSS comment carrying the exact declaration may lose its interior, but the
 -- stylesheet structure around it must survive and the result stays idempotent.
-local commented = "p{ /* font-size: 0 ; old */ color:blue }"
+local commented = "body{ /* font-size: 0 ; old */ color:blue }"
 cleaned, count = Content.sanitize_book_css(commented)
 local open_braces = select(2, cleaned:gsub("%{", ""))
 local close_braces = select(2, cleaned:gsub("}", ""))
-expect(cleaned:find("color:blue", 1, true) and open_braces == close_braces,
+expect(count == 1 and cleaned:find("color:blue", 1, true) and open_braces == close_braces,
     "comment rewrite must keep the block structurally valid")
 local _, recount = Content.sanitize_book_css(cleaned)
 expect(recount == 0, "sanitization after comment rewrite must be idempotent")
